@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#0066cc">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="Video RPM">
+    <meta name="description" content="Measure engine RPM from flywheel video — white stripe marker analysis">
+    <link rel="apple-touch-icon" href="icons/icon-192.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+    <link rel="stylesheet" href="css/video-rpm.css">
+    <title>Video RPM Analyzer</title>
+</head>
+<body>
+    <header class="app-header">
+        <h1 class="app-title">
+            <svg class="app-icon" viewBox="0 0 24 24" width="24" height="24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="23 7 16 12 23 17 23 7"/>
+                <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+            </svg>
+            Video RPM
+        </h1>
+        <a href="index.html" class="nav-link" title="Audio RPM Meter">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 18V5l12-2v13"/>
+                <circle cx="6" cy="18" r="3"/>
+                <circle cx="18" cy="16" r="3"/>
+            </svg>
+            Audio
+        </a>
+    </header>
+
+    <main class="app-main">
+        <!-- ============ STEP 1: Upload ============ -->
+        <section class="card upload-section" id="uploadSection">
+            <h2 class="card-title">1. Upload Engine Video</h2>
+            <p class="card-hint">Film the flywheel with the white stripe marker visible</p>
+            <label class="upload-area" id="uploadArea">
+                <input type="file" accept="video/*" id="videoInput" hidden>
+                <svg class="upload-icon" viewBox="0 0 48 48" width="48" height="48" fill="none"
+                     stroke="currentColor" stroke-width="2">
+                    <rect x="6" y="10" width="36" height="28" rx="4"/>
+                    <circle cx="24" cy="24" r="8"/>
+                    <circle cx="24" cy="24" r="3"/>
+                    <line x1="24" y1="2" x2="24" y2="10"/>
+                </svg>
+                <span class="upload-text">Tap to select video</span>
+                <span class="upload-hint">or drag & drop • .MOV .MP4 .WEBM</span>
+            </label>
+            <div class="video-info" id="videoInfo" hidden>
+                <span id="videoInfoText"></span>
+            </div>
+        </section>
+
+        <!-- ============ STEP 2: Select Flywheel ============ -->
+        <section class="card flywheel-section" id="flywheelSection" hidden>
+            <h2 class="card-title">2. Mark the Flywheel</h2>
+            <p class="card-hint">Tap the center of the flywheel, then adjust the radius</p>
+            <div class="canvas-wrapper" id="canvasWrapper">
+                <canvas id="previewCanvas"></canvas>
+                <div class="canvas-crosshair" id="crosshair" hidden>+</div>
+            </div>
+            <div class="flywheel-controls">
+                <label class="slider-label">
+                    <span>Radius</span>
+                    <span id="radiusValue">—</span>
+                </label>
+                <input type="range" class="slider" id="radiusSlider" min="50" max="500"
+                       value="200" disabled>
+                <button class="btn btn-secondary btn-sm" id="resetSelectionBtn" disabled>
+                    Reset Selection
+                </button>
+            </div>
+        </section>
+
+        <!-- ============ STEP 3: Analyze ============ -->
+        <section class="card analyze-section" id="analyzeSection" hidden>
+            <h2 class="card-title">3. Analyze RPM</h2>
+            <div class="settings-row">
+                <label class="setting">
+                    <span>Window</span>
+                    <select id="windowSelect">
+                        <option value="1.0">1.0 s</option>
+                        <option value="1.5">1.5 s</option>
+                        <option value="2.0" selected>2.0 s</option>
+                        <option value="3.0">3.0 s</option>
+                    </select>
+                </label>
+                <label class="setting">
+                    <span>Min RPM</span>
+                    <input type="number" id="minRpmInput" value="200" min="50" max="2000" step="50">
+                </label>
+                <label class="setting">
+                    <span>Max RPM</span>
+                    <input type="number" id="maxRpmInput" value="3000" min="500" max="9000" step="100">
+                </label>
+            </div>
+            <button class="btn btn-primary" id="analyzeBtn" disabled>
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none"
+                     stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="5 3 19 12 5 21 5 3"/>
+                </svg>
+                Analyze Video
+            </button>
+            <div class="progress-container" id="progressContainer" hidden>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <span class="progress-text" id="progressText">Extracting frames…</span>
+            </div>
+        </section>
+
+        <!-- ============ STEP 4: Results ============ -->
+        <section class="card results-section" id="resultsSection" hidden>
+            <h2 class="card-title">Results</h2>
+
+            <!-- Big RPM Display -->
+            <div class="rpm-result">
+                <span class="rpm-number" id="rpmNumber">—</span>
+                <span class="rpm-label">RPM</span>
+            </div>
+
+            <div class="result-meta" id="resultMeta"></div>
+
+            <!-- RPM over time chart -->
+            <div class="chart-container">
+                <h3 class="chart-title">RPM over Time</h3>
+                <canvas id="rpmChart"></canvas>
+            </div>
+
+            <!-- FFT spectrum chart -->
+            <div class="chart-container">
+                <h3 class="chart-title">Frequency Spectrum</h3>
+                <canvas id="fftChart"></canvas>
+            </div>
+
+            <button class="btn btn-secondary" id="newAnalysisBtn">
+                ↻ New Analysis
+            </button>
+        </section>
+    </main>
+
+    <footer class="app-footer">
+        <p>Video RPM Analyzer • Flywheel stripe detection via FFT</p>
+    </footer>
+
+    <!-- Hidden video element for frame extraction -->
+    <video id="hiddenVideo" style="display:none" muted playsinline></video>
+
+    <script src="js/video-rpm.js"></script>
+</body>
+</html>
