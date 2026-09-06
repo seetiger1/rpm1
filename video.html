@@ -62,7 +62,6 @@
             <p class="card-hint">Tap the center of the flywheel, then adjust the radius</p>
             <div class="canvas-wrapper" id="canvasWrapper">
                 <canvas id="previewCanvas"></canvas>
-                <div class="canvas-crosshair" id="crosshair" hidden>+</div>
             </div>
             <div class="flywheel-controls">
                 <label class="slider-label">
@@ -123,18 +122,60 @@
                 <span class="rpm-number" id="rpmNumber">—</span>
                 <span class="rpm-label">RPM</span>
             </div>
-
             <div class="result-meta" id="resultMeta"></div>
 
-            <!-- RPM over time chart -->
-            <div class="chart-container">
-                <h3 class="chart-title">RPM over Time</h3>
-                <canvas id="rpmChart"></canvas>
+            <!-- ====== EXPLAINABILITY SECTION ====== -->
+            <div class="explain-section">
+                <h3 class="explain-title">How was this calculated?</h3>
+
+                <!-- Plain-language summary -->
+                <div class="explain-summary" id="explainSummary"></div>
+
+                <!-- Filmstrip -->
+                <div class="filmstrip-section">
+                    <h4 class="section-subtitle">🎞️ Rotation Filmstrip</h4>
+                    <p class="card-hint">Consecutive frames — ★ marks where the stripe passes the sensor point</p>
+                    <div class="filmstrip-scroll" id="filmstripScroll"></div>
+                </div>
+
+                <!-- Annotated brightness signal -->
+                <div class="chart-container">
+                    <h4 class="section-subtitle">📈 Brightness Signal (zoomed, ~2s)</h4>
+                    <p class="card-hint">Each peak = one stripe pass. Red dots = detected rotations.</p>
+                    <canvas id="brightnessChart"></canvas>
+                </div>
+
+                <!-- Rotation table (collapsible) -->
+                <div class="rotation-section">
+                    <button class="btn btn-secondary btn-sm rotation-toggle" id="rotationToggle">
+                        Rotation Details ▼
+                    </button>
+                    <div class="rotation-table-wrap" id="rotationTableWrap" hidden>
+                        <div class="rotation-table-scroll">
+                            <table class="rotation-table">
+                                <thead>
+                                    <tr>
+                                        <th>#</th>
+                                        <th>Frame</th>
+                                        <th>Time</th>
+                                        <th>Period</th>
+                                        <th>RPM</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="rotationTableBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
             </div>
 
-            <!-- FFT spectrum chart -->
+            <!-- ====== EXISTING CHARTS ====== -->
             <div class="chart-container">
-                <h3 class="chart-title">Frequency Spectrum</h3>
+                <h4 class="section-subtitle">RPM over Time</h4>
+                <canvas id="rpmChart"></canvas>
+            </div>
+            <div class="chart-container">
+                <h4 class="section-subtitle">🔍 Frequency Spectrum</h4>
                 <canvas id="fftChart"></canvas>
             </div>
 
@@ -149,9 +190,7 @@
         <p class="version"></p>
     </footer>
 
-    <!-- Hidden video element for frame extraction -->
     <video id="hiddenVideo" style="display:none" muted playsinline></video>
-
     <script src="js/video-rpm.js"></script>
 </body>
 </html>
