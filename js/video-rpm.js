@@ -1,10 +1,12 @@
 /* ==========================================================================
-   Video RPM Analyzer – Client-Side JavaScript
+   Video RPM Analyzer – Client-Side JavaScript  (v1.1.0)
    Ports the Python FFT-based flywheel stripe detection to the browser.
    No server needed — runs entirely on the device.
    ========================================================================== */
 
 'use strict';
+
+const APP_VERSION = '1.1.0';
 
 // ---------------------------------------------------------------------------
 // FFT – Cooley-Tukey radix-2 (in-place)
@@ -241,8 +243,35 @@ function combineResults(allTraces) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Reliably seek a video element to a specific time.
+ * Returns a promise that resolves when the frame is ready to draw.
+ */
+function seekVideo(video, timeSec) {
+    return new Promise((resolve) => {
+        // If already at target time (within one frame), resolve immediately
+        if (Math.abs(video.currentTime - timeSec) < 0.001) {
+            resolve();
+            return;
+        }
+
+        const onSeeked = () => {
+            video.removeEventListener('seeked', onSeeked);
+            resolve();
+        };
+        video.addEventListener('seeked', onSeeked);
+        video.currentTime = timeSec;
+
+        // Safety timeout — some browsers don't fire seeked at end of video
+        setTimeout(() => {
+            video.removeEventListener('seeked', onSeeked);
+            resolve();
+        }, 500);
+    });
+}
+
+/**
  * Seek-based frame-by-frame extraction from a video element.
- * Draws each frame to a canvas and calls `onFrame(imageData, frameIndex)`.
+ * Draws each frame to a canvas and extracts brightness at ROI points.
  */
 async function extractFrames(video, canvas, roiPositions, fps, onProgress) {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -260,12 +289,7 @@ async function extractFrames(video, canvas, roiPositions, fps, onProgress) {
     let extractedCount = 0;
 
     for (let t = 0; t < duration - dt / 2; t += dt) {
-        video.currentTime = t;
-        await new Promise((resolve) => {
-            video.onseeked = resolve;
-            // Timeout fallback in case onseeked doesn't fire (e.g. beyond duration)
-            setTimeout(resolve, 200);
-        });
+        await seekVideo(video, t);
 
         ctx.drawImage(video, 0, 0);
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -278,6 +302,11 @@ async function extractFrames(video, canvas, roiPositions, fps, onProgress) {
         extractedCount++;
         if (onProgress) {
             onProgress(extractedCount, totalFrames);
+        }
+
+        // Yield to UI every 20 frames to keep progress bar responsive
+        if (extractedCount % 20 === 0) {
+            await new Promise((r) => setTimeout(r, 0));
         }
     }
 
@@ -417,11 +446,12 @@ class FlywheelSelector {
         this.canvas = canvasEl;
         this.wrapper = wrapperEl;
         this.ctx = canvasEl.getContext('2d');
-        this.image = null;      // HTMLImageElement or HTMLVideoElement
+        this.frameImage = null; // Stores a snapshot (ImageBitmap or ImageData)
         this.center = null;     // { x, y } in image coordinates
         this.radius = 200;      // in image coordinates
-        this.scale = 1;         // display scale factor
         this.roiPositions = []; // computed ROI positions
+        this.imageW = 0;
+        this.imageH = 0;
 
         this._onSelect = null;
 
@@ -429,36 +459,63 @@ class FlywheelSelector {
         this.wrapper.addEventListener('pointerdown', (e) => this._handleTap(e));
     }
 
-    /** Load a video frame onto the canvas. */
-    showFrame(video) {
-        this.image = video;
+    /**
+     * Capture a snapshot of the current video frame and display it.
+     * We store the snapshot as an ImageBitmap so it remains drawable
+     * even after the video element seeks to a different time later.
+     */
+    async showFrame(video) {
         const vw = video.videoWidth;
         const vh = video.videoHeight;
 
-        // Set canvas to display size (CSS controls actual display)
+        if (vw === 0 || vh === 0) return;
+
+        this.imageW = vw;
+        this.imageH = vh;
+
+        // Set canvas to native video resolution
         this.canvas.width = vw;
         this.canvas.height = vh;
 
-        this.ctx.drawImage(video, 0, 0);
+        // Create a persistent snapshot of this frame.
+        // createImageBitmap works in all modern browsers (Safari 15+, Chrome, Firefox).
+        try {
+            this.frameImage = await createImageBitmap(video);
+        } catch (_err) {
+            // Fallback: draw to a temp canvas and capture as ImageData
+            const tmpCanvas = document.createElement('canvas');
+            tmpCanvas.width = vw;
+            tmpCanvas.height = vh;
+            const tmpCtx = tmpCanvas.getContext('2d');
+            tmpCtx.drawImage(video, 0, 0);
+            this.frameImage = tmpCanvas; // store the canvas itself as a drawable
+        }
+
         this.center = null;
         this.roiPositions = [];
+        this.ctx.drawImage(this.frameImage, 0, 0);
     }
 
     /** Handle a tap to set the flywheel center. */
     _handleTap(e) {
         e.preventDefault();
-        if (!this.image) return;
+        if (!this.frameImage) return;
 
         const rect = this.canvas.getBoundingClientRect();
-        const scaleX = rect.width / this.canvas.width;
-        const scaleY = rect.height / this.canvas.height;
-        
+        if (rect.width === 0 || rect.height === 0) return;
+
+        const scaleX = this.imageW / rect.width;
+        const scaleY = this.imageH / rect.height;
+
         const displayX = e.clientX - rect.left;
         const displayY = e.clientY - rect.top;
 
-        // Convert to image coordinates
-        const imgX = Math.round(displayX / scaleX);
-        const imgY = Math.round(displayY / scaleY);
+        // Convert display coordinates to image coordinates
+        const imgX = Math.round(displayX * scaleX);
+        const imgY = Math.round(displayY * scaleY);
+
+        // Sanity check — must be within the image
+        if (imgX < 0 || imgX >= this.imageW || imgY < 0 || imgY >= this.imageH) return;
 
         this.center = { x: imgX, y: imgY };
         this._updateROIs();
@@ -484,12 +541,12 @@ class FlywheelSelector {
         );
     }
 
-    /** Redraw the frame with overlay. */
+    /** Redraw the snapshot frame with overlay. */
     redraw() {
-        const { ctx, canvas, image, center, radius } = this;
-        if (!image) return;
+        const { ctx, frameImage, center, radius } = this;
+        if (!frameImage) return;
 
-        ctx.drawImage(image, 0, 0);
+        ctx.drawImage(frameImage, 0, 0);
 
         if (!center) return;
 
@@ -573,10 +630,27 @@ class VideoRPMApp {
 
         // State
         this.videoFile = null;
+        this.videoURL = null;
         this.fps = 0;
         this.selector = new FlywheelSelector(this.previewCanvas, this.canvasWrapper);
 
+        // Show version in footer
+        const footer = document.querySelector('.app-footer');
+        if (footer) {
+            const versionEl = footer.querySelector('.version');
+            if (versionEl) versionEl.textContent = `v${APP_VERSION}`;
+        }
+
         this._bindEvents();
+    }
+
+    _resetSelectionUI() {
+        this.selector.center = null;
+        this.selector.roiPositions = [];;
+        this.radiusSlider.disabled = true;
+        this.resetSelectionBtn.disabled = true;
+        this.analyzeBtn.disabled = true;
+        this.radiusValue.textContent = '—';
     }
 
     _bindEvents() {
@@ -584,8 +658,9 @@ class VideoRPMApp {
         this.videoInput.addEventListener('change', (e) => {
             if (e.target.files.length > 0) {
                 this._handleFile(e.target.files[0]);
-                e.target.value = ''; // Reset to allow re-selecting same file
             }
+            // Reset input so the same file can be re-selected
+            e.target.value = '';
         });
 
         // Drag & drop
@@ -619,38 +694,23 @@ class VideoRPMApp {
 
         // Reset selection
         this.resetSelectionBtn.addEventListener('click', () => {
-            this.selector.center = null;
-            this.selector.roiPositions = [];
+            this._resetSelectionUI();
             this.selector.redraw();
-            this.radiusSlider.disabled = true;
-            this.resetSelectionBtn.disabled = true;
-            this.analyzeBtn.disabled = true;
-            this.radiusValue.textContent = '—';
         });
 
         // Analyze button
         this.analyzeBtn.addEventListener('click', () => this._runAnalysis());
 
-        // New analysis
+        // New analysis — go back to flywheel selection with same video
         this.newAnalysisBtn.addEventListener('click', () => {
             this.resultsSection.hidden = true;
             this.flywheelSection.hidden = false;
             this.analyzeSection.hidden = false;
-            
-            // Reset selection state
-            this.selector.center = null;
-            this.selector.roiPositions = [];
-            this.radiusSlider.disabled = true;
-            this.resetSelectionBtn.disabled = true;
-            this.analyzeBtn.disabled = true;
-            this.radiusValue.textContent = '—';
-            
-            // Re-show the frame
-            this.hiddenVideo.currentTime = 0.5;
-            this.hiddenVideo.onseeked = () => {
-                this.selector.showFrame(this.hiddenVideo);
-            };
-            
+
+            // Reset selection state but keep the frame snapshot
+            this._resetSelectionUI();
+            this.selector.redraw(); // redraws the stored snapshot without overlay
+
             window.scrollTo({ top: 0, behavior: 'smooth' });
         });
     }
@@ -658,38 +718,33 @@ class VideoRPMApp {
     async _handleFile(file) {
         this.videoFile = file;
 
-        // Reset UI state for new uploads
-        this.radiusSlider.disabled = true;
-        this.resetSelectionBtn.disabled = true;
-        this.analyzeBtn.disabled = true;
-        this.radiusValue.textContent = '—';
+        // Reset UI
+        this._resetSelectionUI();
         this.progressContainer.hidden = true;
 
-        // Load video
-        if (this.hiddenVideo.src) {
-            URL.revokeObjectURL(this.hiddenVideo.src);
+        // Revoke previous blob URL to free memory
+        if (this.videoURL) {
+            URL.revokeObjectURL(this.videoURL);
         }
-        const url = URL.createObjectURL(file);
-        this.hiddenVideo.src = url;
+        this.videoURL = URL.createObjectURL(file);
+
+        // Load the video element
+        const v = this.hiddenVideo;
+        v.src = this.videoURL;
 
         await new Promise((resolve, reject) => {
-            this.hiddenVideo.onloadedmetadata = resolve;
-            this.hiddenVideo.onerror = () => reject(new Error('Cannot load video'));
+            v.onloadedmetadata = resolve;
+            v.onerror = () => reject(new Error('Cannot load video'));
         });
 
         // Wait for enough data to seek
-        if (this.hiddenVideo.readyState < 2) {
+        if (v.readyState < 2) {
             await new Promise((resolve) => {
-                this.hiddenVideo.oncanplay = resolve;
+                v.oncanplay = resolve;
             });
         }
 
-        const v = this.hiddenVideo;
-        this.fps = v.webkitDecodedFrameCount ? 30 : 30; // Fallback FPS estimation
-
-        // Try to estimate FPS from video properties
-        // Unfortunately, browsers don't expose exact FPS from metadata.
-        // We'll estimate it by seeking and timing, or ask the user.
+        // Estimate FPS
         this.fps = await this._estimateFPS(v);
 
         const duration = v.duration;
@@ -700,11 +755,12 @@ class VideoRPMApp {
         this.videoInfoText.textContent =
             `${v.videoWidth}×${v.videoHeight} · ${this.fps} fps · ${duration.toFixed(1)}s · ${sizeMB} MB`;
 
-        // Seek to 0.5s and show first frame
-        v.currentTime = 0.5;
-        await new Promise((r) => { v.onseeked = r; });
+        // Seek to 0.5s (or 0 for very short clips) and snapshot the frame
+        const seekTarget = Math.min(0.5, duration * 0.1);
+        await seekVideo(v, seekTarget);
 
-        this.selector.showFrame(v);
+        // showFrame creates a persistent ImageBitmap snapshot
+        await this.selector.showFrame(v);
 
         // Set default radius based on frame size
         const defaultRadius = Math.round(Math.min(v.videoWidth, v.videoHeight) * 0.35);
@@ -735,15 +791,23 @@ class VideoRPMApp {
             return new Promise((resolve) => {
                 const timestamps = [];
                 let count = 0;
+                let resolved = false;
 
                 video.muted = true;
                 video.currentTime = 0;
 
+                const done = (fps) => {
+                    if (resolved) return;
+                    resolved = true;
+                    video.pause();
+                    resolve(fps);
+                };
+
                 const onFrame = (_now, metadata) => {
+                    if (resolved) return;
                     timestamps.push(metadata.mediaTime);
                     count++;
                     if (count >= 15) {
-                        video.pause();
                         // Calculate average FPS from timestamps
                         const diffs = [];
                         for (let i = 1; i < timestamps.length; i++) {
@@ -751,14 +815,12 @@ class VideoRPMApp {
                             if (d > 0) diffs.push(d);
                         }
                         if (diffs.length > 2) {
-                            // Median delta
                             diffs.sort((a, b) => a - b);
                             const medianDt = diffs[Math.floor(diffs.length / 2)];
                             const rawFPS = 1.0 / medianDt;
-                            // Snap to common frame rates
-                            resolve(this._snapFPS(rawFPS));
+                            done(this._snapFPS(rawFPS));
                         } else {
-                            resolve(30); // fallback
+                            done(30);
                         }
                     } else {
                         video.requestVideoFrameCallback(onFrame);
@@ -766,19 +828,14 @@ class VideoRPMApp {
                 };
 
                 video.requestVideoFrameCallback(onFrame);
-                video.play().catch(() => resolve(30));
+                video.play().catch(() => done(30));
 
                 // Timeout fallback
-                setTimeout(() => {
-                    video.pause();
-                    if (count < 5) resolve(30);
-                }, 3000);
+                setTimeout(() => done(30), 3000);
             });
         }
 
         // Method 2: Heuristic based on file size and duration
-        // iPhone typically shoots at 30 or 60 fps
-        // If file size per second > 2MB, likely 60fps
         const bytesPerSec = video.duration > 0 ? this.videoFile.size / video.duration : 0;
         return bytesPerSec > 2_000_000 ? 60 : 30;
     }
@@ -872,11 +929,9 @@ class VideoRPMApp {
                 }
             }
             const bestSignal = signals[bestROIIdx];
+            const mean = bestSignal.reduce((a, b) => a + b, 0) / bestSignal.length;
             const fullFFT = rfftMagnitude(
-                bestSignal.map((v, i) => {
-                    const mean = bestSignal.reduce((a, b) => a + b, 0) / bestSignal.length;
-                    return v - mean;
-                }),
+                bestSignal.map((v) => v - mean),
                 fps
             );
 
