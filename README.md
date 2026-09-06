@@ -122,4 +122,4 @@ $$\text{RPM} = f_{rot} \times 60$$
 ---
 
 ## License
-MIT License. Open source and free to adapt for marine, automotive, and DIY engine diagnostic applications.
+Non-commercial use permitted, CC BY-NC.
